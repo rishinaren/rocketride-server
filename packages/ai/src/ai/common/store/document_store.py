@@ -433,7 +433,14 @@ class DocumentStoreBase(ABC):
             # Fetch the document using the filter
             doc = self.get(filter, checkCollection=False)
 
-            # The collection should contain exactly one control document, otherwise it's corrupted
+            # No control document means the collection was never finished -- an index
+            # left behind by a build that could not upsert it. Report it as missing so
+            # createCollection writes one instead of failing forever on a half-made
+            # collection the user would otherwise have to delete by hand.
+            if len(doc) == 0:
+                return False
+
+            # More than one is real corruption: there is no safe way to pick.
             if len(doc) != 1:
                 raise Exception(f'Collection does not have control document, found {len(doc)}')
 
