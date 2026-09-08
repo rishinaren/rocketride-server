@@ -433,12 +433,32 @@ class DocumentStoreBase(ABC):
             # Fetch the document using the filter
             doc = self.get(filter, checkCollection=False)
 
-            # No control document means the collection was never finished -- an index
-            # left behind by a build that could not upsert it. Report it as missing so
-            # createCollection writes one instead of failing forever on a half-made
-            # collection the user would otherwise have to delete by hand.
+            # No control document means one of two very different things, and the
+            # difference is whether the collection holds any real documents.
             if len(doc) == 0:
-                return False
+                contentFilter = DocFilter()
+                contentFilter.isDeleted = False
+                content = self.get(contentFilter, checkCollection=False)
+
+                # Empty: the collection was never finished -- left behind by a build
+                # that could not upsert its control document. Report it as missing so
+                # createCollection writes one, instead of failing forever on a
+                # half-made collection the user would have to delete by hand.
+                if len(content) == 0:
+                    return False
+
+                # Populated: something else owns this collection -- a legacy index, or
+                # one created outside RocketRide. Adopting it would stamp the incoming
+                # model and dimension onto vectors that may have neither, so searches
+                # would silently return nonsense or fail on a dimension mismatch. Say
+                # what is wrong instead of taking it over.
+                # Two of the nine drivers do not carry a `collection` attribute.
+                name = getattr(self, 'collection', None) or 'this collection'
+                raise Exception(
+                    f'{name} holds {len(content)} document(s) but no control document, so the embedding '
+                    'model and vector size it was built with are unknown. RocketRide will not adopt it: '
+                    'point the node at a different collection, or delete this one if it is not needed.'
+                )
 
             # More than one is real corruption: there is no safe way to pick.
             if len(doc) != 1:
