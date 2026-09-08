@@ -436,9 +436,16 @@ class DocumentStoreBase(ABC):
             # No control document means one of two very different things, and the
             # difference is whether the collection holds any real documents.
             if len(doc) == 0:
-                contentFilter = DocFilter()
-                contentFilter.isDeleted = False
-                content = self.get(contentFilter, checkCollection=False)
+                # Both halves are needed: a collection whose documents were all
+                # soft-deleted holds no live rows but is far from unused, and
+                # reading only the live ones would call it empty and adopt it.
+                # There is no control document to exclude here -- that is the
+                # branch we are in -- so every hit counts.
+                liveFilter = DocFilter()
+                liveFilter.isDeleted = False
+                deletedFilter = DocFilter()
+                deletedFilter.isDeleted = True
+                content = self.get(liveFilter, checkCollection=False) + self.get(deletedFilter, checkCollection=False)
 
                 # Empty: the collection was never finished -- left behind by a build
                 # that could not upsert its control document. Report it as missing so
