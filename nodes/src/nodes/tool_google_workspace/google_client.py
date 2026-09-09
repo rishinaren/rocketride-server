@@ -416,6 +416,13 @@ _thread_transport = threading.local()
 # held key can never be collected while its entry is stored.
 _TRANSPORT_CACHE_MAX = 8
 
+# googleapiclient's build_http() gives the service transport a timeout (its own
+# DEFAULT_HTTP_TIMEOUT_SEC, or the global socket timeout when one is set). A bare
+# httplib2.Http() defaults to timeout=None, so rebuilding the transport without
+# carrying that over would let a hung connection block its worker thread forever
+# — and a read that never returns never raises, so the retry below never fires.
+_DEFAULT_HTTP_TIMEOUT_SEC = 60
+
 
 def _close_transport(http: Any) -> None:
     """Release the sockets an evicted transport still holds, best effort."""
@@ -441,6 +448,9 @@ def _request_http(request: Any):
     connection. Returns None (keep the request's own transport) when there is
     nothing to rebuild from.
 
+    The rebuilt transport inherits the service transport's timeout, so it cannot
+    silently fall back to httplib2's indefinite default.
+
     Entries are keyed by ``id(creds)``, which is safe precisely because the
     cached transport keeps that credential object alive: no stored key can be
     recycled onto a different credential. Past ``_TRANSPORT_CACHE_MAX`` the
@@ -450,6 +460,7 @@ def _request_http(request: Any):
     creds = getattr(shared, 'credentials', None)
     if creds is None:
         return None
+    timeout = getattr(getattr(shared, 'http', None), 'timeout', None) or _DEFAULT_HTTP_TIMEOUT_SEC
     try:
         import google_auth_httplib2
         import httplib2
@@ -464,7 +475,7 @@ def _request_http(request: Any):
     if http is not None:
         cache.move_to_end(key)
         return http
-    http = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http())
+    http = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=timeout))
     cache[key] = http
     while len(cache) > _TRANSPORT_CACHE_MAX:
         _evicted_key, evicted = cache.popitem(last=False)

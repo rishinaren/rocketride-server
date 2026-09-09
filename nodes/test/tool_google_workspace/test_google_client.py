@@ -350,7 +350,7 @@ def test_execute_uses_a_distinct_transport_per_thread(monkeypatch, service):
             self.http = http
 
     fake_google_auth = types.SimpleNamespace(AuthorizedHttp=FakeAuthorizedHttp)
-    fake_httplib2 = types.SimpleNamespace(Http=lambda: object())
+    fake_httplib2 = types.SimpleNamespace(Http=lambda timeout=None: object())
     monkeypatch.setitem(sys.modules, 'google_auth_httplib2', fake_google_auth)
     monkeypatch.setitem(sys.modules, 'httplib2', fake_httplib2)
     monkeypatch.setattr(google_client, '_thread_transport', threading.local())
@@ -423,6 +423,9 @@ def test_request_http_evicts_and_closes_beyond_the_cache_bound(monkeypatch):
     closed = []
 
     class FakeHttp:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+
         def close(self):
             closed.append(self)
 
@@ -475,3 +478,32 @@ def test_transport_error_types_picks_up_optional_dependencies_lazily(monkeypatch
         assert calls['count'] == 2, 'an httplib2 transport fault earns a retry'
     finally:
         google_client._transport_error_types.cache_clear()
+
+
+def test_request_http_preserves_the_service_transport_timeout(monkeypatch):
+    """A rebuilt transport must not fall back to httplib2's indefinite default."""
+    import threading
+
+    class FakeHttp:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+
+    class FakeAuthorizedHttp:
+        def __init__(self, credentials, http=None):
+            self.credentials = credentials
+            self.http = http
+
+    monkeypatch.setitem(sys.modules, 'google_auth_httplib2', types.SimpleNamespace(AuthorizedHttp=FakeAuthorizedHttp))
+    monkeypatch.setitem(sys.modules, 'httplib2', types.SimpleNamespace(Http=FakeHttp))
+    monkeypatch.setattr(google_client, '_thread_transport', threading.local())
+
+    def rebuilt(inner_timeout):
+        shared = types.SimpleNamespace(credentials=object(), http=FakeHttp(timeout=inner_timeout))
+        return google_client._request_http(types.SimpleNamespace(http=shared))
+
+    # googleapiclient's build_http() sets 60s by default; a global socket timeout
+    # overrides it. Either way the rebuilt transport must carry it over.
+    assert rebuilt(60).http.timeout == 60
+    assert rebuilt(12.5).http.timeout == 12.5
+    # No inner transport to read from: fall back rather than block forever.
+    assert rebuilt(None).http.timeout == google_client._DEFAULT_HTTP_TIMEOUT_SEC
