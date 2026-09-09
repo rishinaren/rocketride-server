@@ -436,16 +436,23 @@ class DocumentStoreBase(ABC):
             # No control document means one of two very different things, and the
             # difference is whether the collection holds any real documents.
             if len(doc) == 0:
-                # Both halves are needed: a collection whose documents were all
+                # The question is only whether ANY document is here, so ask for
+                # one: a legacy collection can be large, and loading it to answer
+                # a yes/no would cost the whole thing in memory.
+                #
+                # Both halves are needed. A collection whose documents were all
                 # soft-deleted holds no live rows but is far from unused, and
                 # reading only the live ones would call it empty and adopt it.
                 # There is no control document to exclude here -- that is the
-                # branch we are in -- so every hit counts.
-                liveFilter = DocFilter()
-                liveFilter.isDeleted = False
-                deletedFilter = DocFilter()
-                deletedFilter.isDeleted = True
-                content = self.get(liveFilter, checkCollection=False) + self.get(deletedFilter, checkCollection=False)
+                # branch we are in -- so any hit is a real document.
+                content = []
+                for isDeleted in (False, True):
+                    probe = DocFilter()
+                    probe.isDeleted = isDeleted
+                    probe.limit = 1
+                    content = self.get(probe, checkCollection=False)
+                    if content:
+                        break
 
                 # Empty: the collection was never finished -- left behind by a build
                 # that could not upsert its control document. Report it as missing so
@@ -462,7 +469,7 @@ class DocumentStoreBase(ABC):
                 # Two of the nine drivers do not carry a `collection` attribute.
                 name = getattr(self, 'collection', None) or 'this collection'
                 raise Exception(
-                    f'{name} holds {len(content)} document(s) but no control document, so the embedding '
+                    f'{name} holds documents but no control document, so the embedding '
                     'model and vector size it was built with are unknown. RocketRide will not adopt it: '
                     'point the node at a different collection, or delete this one if it is not needed.'
                 )
